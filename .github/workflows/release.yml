@@ -135,6 +135,11 @@ jobs:
               # Checkout is owned by the runner user, not by container root.
               git config --global --add safe.directory /work
               ./script/linux
+              # script/linux installs Ubuntu 20.04's system CMake 3.16.3,
+              # but wasmtime-c-api-impl's build script uses file(CONFIGURE),
+              # which needs CMake >= 3.19. Upgrade with the repo's own
+              # script/install-cmake (KitWare apt repo) before building.
+              ./script/install-cmake 3.30.4
               export PATH="$HOME/.cargo/bin:$PATH"
               export CC=clang-18 CXX=clang++-18
               if command -v llvm-objcopy-18 >/dev/null 2>&1; then
