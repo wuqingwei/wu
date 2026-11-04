@@ -40,6 +40,13 @@ jobs:
               # which needs CMake >= 3.19. Upgrade with the repo's own
               # script/install-cmake (KitWare apt repo) before building.
               ./script/install-cmake 3.30.4
+              # yeslogic-fontconfig-sys probes fontconfig via pkg-config,
+              # which failed in run 41794979956 even though libfontconfig1-dev
+              # was installed in this same container. Pin the multiarch .pc
+              # directory explicitly and fail fast if it is still unresolvable,
+              # instead of failing 12 minutes into the cargo build.
+              export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}
+              pkg-config --modversion fontconfig
               export PATH="$HOME/.cargo/bin:$PATH"
               # script/linux installs clang-18 for 20.04, but bundle-linux
               # defaults to `clang`, which is clang-10 on 20.04 and cannot
