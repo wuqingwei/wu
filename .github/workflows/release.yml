@@ -132,6 +132,8 @@ jobs:
               export DEBIAN_FRONTEND=noninteractive
               apt-get update
               apt-get install -y curl git ca-certificates lsb-release gnupg
+              # Checkout is owned by the runner user, not by container root.
+              git config --global --add safe.directory /work
               ./script/linux
               export PATH="$HOME/.cargo/bin:$PATH"
               export CC=clang-18 CXX=clang++-18

@@ -27,11 +27,13 @@ jobs:
             -v "$PWD:/work" -w /work \
             ubuntu:20.04 bash -euxc '
               export DEBIAN_FRONTEND=noninteractive
-              # The checkout is owned by the runner user, not by root
-              # inside the container; without this git refuses to run.
-              git config --global --add safe.directory /work
               apt-get update
               apt-get install -y curl git ca-certificates lsb-release gnupg
+              # The checkout is owned by the runner user, not by root
+              # inside the container; without this git refuses to run.
+              # (git is not in the ubuntu:20.04 base image, so this must
+              # come after the apt install above.)
+              git config --global --add safe.directory /work
               ./script/linux
               export PATH="$HOME/.cargo/bin:$PATH"
               # script/linux installs clang-18 for 20.04, but bundle-linux
