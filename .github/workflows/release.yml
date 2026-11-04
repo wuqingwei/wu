@@ -146,6 +146,16 @@ jobs:
               # directory explicitly and fail fast if it is still unresolvable,
               # instead of failing 12 minutes into the cargo build.
               export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}
+              # Diagnostic for run 41828841327: fontconfig.pc was still not
+              # found even with PKG_CONFIG_PATH pinned, although
+              # libfontconfig1-dev was set up in this same container, and
+              # install-cmake reported a pre-existing /usr/local/bin/cmake
+              # (so the container is not a clean ubuntu:20.04 image). Print
+              # where the .pc file actually lives before failing fast.
+              ls -l /usr/lib/x86_64-linux-gnu/pkgconfig/fontconfig.pc || true
+              find /usr -name 'fontconfig.pc' 2>/dev/null || true
+              pkg-config --variable=pc_path pkg-config || true
+              which -a pkg-config cmake || true
               pkg-config --modversion fontconfig
               export PATH="$HOME/.cargo/bin:$PATH"
               export CC=clang-18 CXX=clang++-18
