@@ -1,0 +1,64 @@
+name: build-ubuntu2004
+# Manual-only Ubuntu 20.04 build for the wuqingwei/wu fork.
+# Unlike release.yml, this does not need a version tag: the fork already
+# carries upstream tag v1.1.16 pointing at the pre-workflow commit, so a
+# tag-triggered release cannot run the new 20.04 job without moving that tag.
+# Trigger from the Actions tab (or `gh workflow run build-ubuntu2004.yml`),
+# then download the artifact from the run.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+jobs:
+  build_linux_2004:
+    # GitHub hosted ubuntu-20.04 runners were removed on 2025-04-15,
+    # so this builds inside an ubuntu:20.04 container on ubuntu-24.04.
+    # The resulting binary links against glibc 2.31 and runs on Ubuntu 20.04.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build in Ubuntu 20.04 container
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" -w /work \
+            ubuntu:20.04 bash -euxc '
+              export DEBIAN_FRONTEND=noninteractive
+              # The checkout is owned by the runner user, not by root
+              # inside the container; without this git refuses to run.
+              git config --global --add safe.directory /work
+              apt-get update
+              apt-get install -y curl git ca-certificates lsb-release gnupg
+              ./script/linux
+              export PATH="$HOME/.cargo/bin:$PATH"
+              # script/linux installs clang-18 for 20.04, but bundle-linux
+              # defaults to `clang`, which is clang-10 on 20.04 and cannot
+              # build webrtc-sys (needs C++20), so pin CC/CXX to clang-18.
+              export CC=clang-18 CXX=clang++-18
+              # bundle-linux calls plain llvm-objcopy; 20.04 stock llvm-10
+              # does not understand CREL sections from newer LLVM, so
+              # prefer the llvm-objcopy-18 shipped with clang-18 if present.
+              if command -v llvm-objcopy-18 >/dev/null 2>&1; then
+                ln -sf "$(command -v llvm-objcopy-18)" /usr/local/bin/llvm-objcopy
+              fi
+              echo stable > crates/wu/RELEASE_CHANNEL
+              ./script/bundle-linux
+              # bundle-linux always produces wu-linux-x86_64.tar.gz,
+              # the same name as the ubuntu-22.04 build, so rename it.
+              mv target/release/wu-linux-x86_64.tar.gz \
+                 target/release/wu-linux-x86_64-ubuntu2004.tar.gz
+              mv target/wu-remote-server-linux-x86_64.gz \
+                 target/wu-remote-server-linux-x86_64-ubuntu2004.gz
+              chmod a+r target/release/wu-linux-x86_64-ubuntu2004.tar.gz \
+                         target/wu-remote-server-linux-x86_64-ubuntu2004.gz
+            '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64-ubuntu2004
+          path: |
+            target/release/wu-linux-x86_64-ubuntu2004.tar.gz
+            target/wu-remote-server-linux-x86_64-ubuntu2004.gz
+          if-no-files-found: error
