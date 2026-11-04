@@ -110,6 +110,52 @@ jobs:
             target/wu-remote-server-linux-${{ matrix.arch }}.gz
           if-no-files-found: error
 
+  bundle_linux_2004:
+    # Ubuntu 20.04 build for wuqingwei/wu fork.
+    # GitHub hosted ubuntu-20.04 runners were removed on 2025-04-15,
+    # so this builds inside an ubuntu:20.04 container on ubuntu-24.04.
+    # The resulting binary links against glibc 2.31 and runs on Ubuntu 20.04.
+    # script/linux already handles Ubuntu 20.04 (clang-18 + libstdc++-11-dev
+    # from the ubuntu-toolchain-r PPA), but bundle-linux defaults to `clang`,
+    # which is clang-10 on 20.04 and cannot build webrtc-sys (needs C++20),
+    # so CC/CXX must be pinned to clang-18 here.
+    needs: check_version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build in Ubuntu 20.04 container
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" -w /work \
+            ubuntu:20.04 bash -euxc '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y curl git ca-certificates lsb-release gnupg
+              ./script/linux
+              export PATH="$HOME/.cargo/bin:$PATH"
+              export CC=clang-18 CXX=clang++-18
+              if command -v llvm-objcopy-18 >/dev/null 2>&1; then
+                ln -sf "$(command -v llvm-objcopy-18)" /usr/local/bin/llvm-objcopy
+              fi
+              echo stable > crates/wu/RELEASE_CHANNEL
+              ./script/bundle-linux
+              # bundle-linux always produces wu-linux-x86_64.tar.gz,
+              # the same name as the ubuntu-22.04 build, so rename it
+              # to avoid overwriting that asset when artifacts are merged.
+              mv target/release/wu-linux-x86_64.tar.gz \
+                 target/release/wu-linux-x86_64-ubuntu2004.tar.gz
+              mv target/wu-remote-server-linux-x86_64.gz \
+                 target/wu-remote-server-linux-x86_64-ubuntu2004.gz
+            '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64-ubuntu2004
+          path: |
+            target/release/wu-linux-x86_64-ubuntu2004.tar.gz
+            target/wu-remote-server-linux-x86_64-ubuntu2004.gz
+          if-no-files-found: error
+
   bundle_windows:
     needs: check_version
     runs-on: windows-2022
@@ -133,7 +179,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [bundle_mac, bundle_linux, bundle_windows]
+    needs: [bundle_mac, bundle_linux, bundle_windows, bundle_linux_2004]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
