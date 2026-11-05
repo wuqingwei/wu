@@ -111,7 +111,14 @@ jobs:
               ln -sf /usr/lib/x86_64-linux-gnu/libasound.so.2 .libs/libasound.so
               ln -sf /usr/lib/x86_64-linux-gnu/libxcb.so.1 .libs/libxcb.so
               ln -sf /usr/lib/x86_64-linux-gnu/libxkbcommon.so.0 .libs/libxkbcommon.so
-              ln -sf /usr/lib/x86_64-linux-gnu/libxkbcommon-x11.so.0 .libs/libxkbcommon-x11.so
+              # libxkbcommon-x11.so.0 itself is missing in this container
+              # (the runtime package's files never land in
+              # /usr/lib/x86_64-linux-gnu, same as the .pc files), so the
+              # symlink above would dangle. Fetch the focal package and
+              # extract the real library, then link against that.
+              curl -fsSL -o /tmp/libxkbcommon-x11-0.deb http://archive.ubuntu.com/ubuntu/pool/main/libx/libxkbcommon/libxkbcommon-x11-0_0.10.0-1_amd64.deb
+              dpkg-deb -x /tmp/libxkbcommon-x11-0.deb /tmp/xkbcommon-x11
+              ln -sf /tmp/xkbcommon-x11/usr/lib/x86_64-linux-gnu/libxkbcommon-x11.so.0 .libs/libxkbcommon-x11.so
               export RUSTFLAGS="-L $PWD/.libs"
               ./script/bundle-linux
               # bundle-linux always produces wu-linux-x86_64.tar.gz,
