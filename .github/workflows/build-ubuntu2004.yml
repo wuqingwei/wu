@@ -155,7 +155,13 @@ jobs:
               export PATH="$PWD/.bin:$PATH"
               command -v musl-gcc
               printf 'int main(){return 0;}\n' > /tmp/musl-smoke.c
-              musl-gcc /tmp/musl-smoke.c -o /tmp/musl-smoke && /tmp/musl-smoke && echo MUSL_SMOKE_OK
+              # Run 42009023678 also showed the smoke test could not execute:
+              # musl-gcc links dynamically by default and the musl loader
+              # /lib/ld-musl-x86_64.so.1 never landed in the container, so the
+              # test binary failed with "required file not found" (and set -e
+              # did not abort because the failing command sits mid-&&-chain).
+              # Link it statically: that is also what wasmtime's build does.
+              musl-gcc -static /tmp/musl-smoke.c -o /tmp/musl-smoke && /tmp/musl-smoke && echo MUSL_SMOKE_OK
               # Run 41998905194: wasmtime and remote_server built fine, but
               # bundle-linux died in its library-copy step with
               # "cp: cannot stat 'not'". The stray word "not" comes from
@@ -167,7 +173,17 @@ jobs:
               # in system paths, where the file never landed. Point the
               # loader at the extracted copy so ldd resolves it to a real
               # path (which then also gets bundled into wu.app/lib).
-              export LD_LIBRARY_PATH="$PWD/.libs:/tmp/xkbcommon-x11/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              # Run 42009023678: the cp 'not' came back, but for a different
+              # library this time: LD_LIBRARY_PATH did resolve
+              # libxkbcommon-x11.so.0 (it now appears in the cp list as the
+              # extracted path), and the remaining "not" is its dependency
+              # libxcb-xkb.so.1 (verified locally: libxkbcommon-x11.so.0
+              # NEEDEDs libxcb-xkb.so.1, and the focal libxcb-xkb1 package's
+              # files never landed in the container either). Extract it and
+              # add it to the loader path the same way.
+              curl -fsSL -o /tmp/libxcb-xkb1.deb http://archive.ubuntu.com/ubuntu/pool/main/libx/libxcb/libxcb-xkb1_1.14-2_amd64.deb
+              dpkg-deb -x /tmp/libxcb-xkb1.deb /tmp/xcb-xkb
+              export LD_LIBRARY_PATH="$PWD/.libs:/tmp/xkbcommon-x11/usr/lib/x86_64-linux-gnu:/tmp/xcb-xkb/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               ./script/bundle-linux
               # bundle-linux always produces wu-linux-x86_64.tar.gz,
               # the same name as the ubuntu-22.04 build, so rename it.
