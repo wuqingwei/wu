@@ -120,6 +120,21 @@ jobs:
               dpkg-deb -x /tmp/libxkbcommon-x11-0.deb /tmp/xkbcommon-x11
               ln -sf /tmp/xkbcommon-x11/usr/lib/x86_64-linux-gnu/libxkbcommon-x11.so.0 .libs/libxkbcommon-x11.so
               export RUSTFLAGS="-L $PWD/.libs"
+              # Run 41988129875: the editor linked fine, but the musl
+              # remote-server phase failed in wasmtime's build script:
+              # cc-rs could not find "musl-gcc", although musl-tools
+              # reported "Setting up" and the focal package does ship
+              # /usr/bin/musl-gcc (verified locally). Print what is
+              # actually there, then make the tool findable via the
+              # workspace regardless: extract the package and prepend
+              # its usr/bin to PATH (harmless if the system copy exists).
+              command -v musl-gcc || true
+              ls -l /usr/bin/musl-gcc /usr/lib/x86_64-linux-musl/musl-gcc.specs 2>&1 || true
+              ls /usr/lib/x86_64-linux-musl/ 2>&1 | head -20 || true
+              curl -fsSL -o /tmp/musl-tools.deb http://archive.ubuntu.com/ubuntu/pool/universe/m/musl/musl-tools_1.1.24-1_amd64.deb
+              dpkg-deb -x /tmp/musl-tools.deb /tmp/musl-tools
+              export PATH="/tmp/musl-tools/usr/bin:$PATH"
+              command -v musl-gcc || true
               ./script/bundle-linux
               # bundle-linux always produces wu-linux-x86_64.tar.gz,
               # the same name as the ubuntu-22.04 build, so rename it.
