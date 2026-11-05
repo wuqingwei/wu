@@ -56,7 +56,10 @@ jobs:
               find /usr -name 'fontconfig.pc' 2>/dev/null || true
               pkg-config --variable=pc_path pkg-config || true
               which -a pkg-config cmake || true
-              pkg-config --modversion fontconfig
+              # The .pc file is known to be absent in this container (runs
+              # 41828841327 and 41840747930), so this check must not abort
+              # the dlopen trial below; it only prints the failure.
+              pkg-config --modversion fontconfig || true
               export PATH="$HOME/.cargo/bin:$PATH"
               # script/linux installs clang-18 for 20.04, but bundle-linux
               # defaults to `clang`, which is clang-10 on 20.04 and cannot
@@ -69,6 +72,13 @@ jobs:
                 ln -sf "$(command -v llvm-objcopy-18)" /usr/local/bin/llvm-objcopy
               fi
               echo stable > crates/wu/RELEASE_CHANNEL
+              # Trial: make yeslogic-fontconfig-sys load libfontconfig at
+              # runtime via dlopen instead of probing it with pkg-config at
+              # build time (fontconfig docs: RUST_FONTCONFIG_DLOPEN=on, or
+              # the dlopen feature). The built binary will still need
+              # libfontconfig.so.1 on the real Ubuntu 20.04 machine; verify
+              # that when testing the artifact, not here.
+              export RUST_FONTCONFIG_DLOPEN=on
               ./script/bundle-linux
               # bundle-linux always produces wu-linux-x86_64.tar.gz,
               # the same name as the ubuntu-22.04 build, so rename it.
