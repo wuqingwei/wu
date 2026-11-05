@@ -79,16 +79,21 @@ jobs:
               # libfontconfig.so.1 on the real Ubuntu 20.04 machine; verify
               # that when testing the artifact, not here.
               export RUST_FONTCONFIG_DLOPEN=on
-              # Run 41965727724 proved the .pc files are genuinely absent
-              # in this container: dpkg -L listed no .pc for either -dev
-              # package, although the official focal .deb files do ship
-              # them (verified locally from archive.ubuntu.com). Install
-              # verbatim copies from this repo before the cargo build.
+              # Run 41977018538: copying the .pc files into
+              # /usr/lib/x86_64-linux-gnu/pkgconfig/ failed with
+              # "Permission denied" and aborted the run in 4 minutes,
+              # before cargo even started. That directory is not writable
+              # by this build script (which also explains why the
+              # apt-installed .pc files never appeared there). Put the
+              # verbatim copies from this repo in a workspace directory
+              # we own instead, and prepend it to PKG_CONFIG_PATH.
               # fontconfig is already dlopen-bypassed above, but install
               # its .pc too so pkg-config probing is consistent.
+              id; ls -ld /usr/lib/x86_64-linux-gnu/pkgconfig || true
+              mkdir -p .pc
               cp .github/workflows/pkgconfig/fontconfig.pc \
-                 .github/workflows/pkgconfig/alsa.pc \
-                 /usr/lib/x86_64-linux-gnu/pkgconfig/
+                 .github/workflows/pkgconfig/alsa.pc .pc/
+              export PKG_CONFIG_PATH="$PWD/.pc:$PKG_CONFIG_PATH"
               pkg-config --modversion fontconfig alsa || true
               ls /usr/lib/x86_64-linux-gnu/pkgconfig/
               ./script/bundle-linux
