@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# Build script executed INSIDE the ubuntu:20.04 container by the
+# build-ubuntu2004 workflow (docker run ... bash -eux <this file>).
+#
+# This MUST stay a separate file. It used to be inlined into the workflow
+# as `bash -euxc '...'` (single-quoted), and any apostrophe inside it --
+# e.g. in a comment like "20.04's" -- closed the quote early, so docker
+# only ran the first few lines and the rest of the build ran on the
+# ubuntu-24.04 host instead. That silently broke runs 3-15: the "missing
+# .pc/.so/musl files" were installed in the container while the build ran
+# on the host, and the run-15 tarball was even linked against glibc 2.39.
+# Do not inline this back into the workflow.
+set -euxo pipefail
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y curl git ca-certificates lsb-release gnupg
+# The checkout is owned by the runner user, not by root
+# inside the container; without this git refuses to run.
+# (git is not in the ubuntu:20.04 base image, so this must
+# come after the apt install above.)
+git config --global --add safe.directory /work
+./script/linux
+# script/linux installs Ubuntu 20.04's system CMake 3.16.3,
+# but wasmtime-c-api-impl's build script uses file(CONFIGURE),
+# which needs CMake >= 3.19. Upgrade with the repo's own
+# script/install-cmake (KitWare apt repo) before building.
+./script/install-cmake 3.30.4
+# yeslogic-fontconfig-sys probes fontconfig via pkg-config,
+# which failed in run 41794979956 even though libfontconfig1-dev
+# was installed in this same container. Pin the multiarch .pc
+# directory explicitly and fail fast if it is still unresolvable,
+# instead of failing 12 minutes into the cargo build.
+export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}
+# Diagnostic for run 41828841327: fontconfig.pc was still not
+# found even with PKG_CONFIG_PATH pinned, although
+# libfontconfig1-dev was set up in this same container, and
+# install-cmake reported a pre-existing /usr/local/bin/cmake
+# (so the container is not a clean ubuntu:20.04 image). Print
+# where the .pc file actually lives before failing fast.
+ls -l /usr/lib/x86_64-linux-gnu/pkgconfig/fontconfig.pc || true
+find /usr -name 'fontconfig.pc' 2>/dev/null || true
+pkg-config --variable=pc_path pkg-config || true
+which -a pkg-config cmake || true
+# The .pc file is known to be absent in this container (runs
+# 41828841327 and 41840747930), so this check must not abort
+# the dlopen trial below; it only prints the failure.
+pkg-config --modversion fontconfig || true
+export PATH="$HOME/.cargo/bin:$PATH"
+# script/linux installs clang-18 for 20.04, but bundle-linux
+# defaults to `clang`, which is clang-10 on 20.04 and cannot
+# build webrtc-sys (needs C++20), so pin CC/CXX to clang-18.
+export CC=clang-18 CXX=clang++-18
+# bundle-linux calls plain llvm-objcopy; 20.04 stock llvm-10
+# does not understand CREL sections from newer LLVM, so
+# prefer the llvm-objcopy-18 shipped with clang-18 if present.
+if command -v llvm-objcopy-18 >/dev/null 2>&1; then
+  ln -sf "$(command -v llvm-objcopy-18)" /usr/local/bin/llvm-objcopy
+fi
+echo stable > crates/wu/RELEASE_CHANNEL
+# Trial: make yeslogic-fontconfig-sys load libfontconfig at
+# runtime via dlopen instead of probing it with pkg-config at
+# build time (fontconfig docs: RUST_FONTCONFIG_DLOPEN=on, or
+# the dlopen feature). The built binary will still need
+# libfontconfig.so.1 on the real Ubuntu 20.04 machine; verify
+# that when testing the artifact, not here.
+export RUST_FONTCONFIG_DLOPEN=on
+# Run 41977018538: copying the .pc files into
+# /usr/lib/x86_64-linux-gnu/pkgconfig/ failed with
+# "Permission denied" and aborted the run in 4 minutes,
+# before cargo even started. That directory is not writable
+# by this build script (which also explains why the
+# apt-installed .pc files never appeared there). Put the
+# verbatim copies from this repo in a workspace directory
+# we own instead, and prepend it to PKG_CONFIG_PATH.
+# fontconfig is already dlopen-bypassed above, but install
+# its .pc too so pkg-config probing is consistent.
+id; ls -ld /usr/lib/x86_64-linux-gnu/pkgconfig || true
+mkdir -p .pc
+cp .github/workflows/pkgconfig/fontconfig.pc \
+   .github/workflows/pkgconfig/alsa.pc .pc/
+export PKG_CONFIG_PATH="$PWD/.pc:$PKG_CONFIG_PATH"
+pkg-config --modversion fontconfig alsa || true
+ls /usr/lib/x86_64-linux-gnu/pkgconfig/
+# Run 41977772020: every crate compiled (alsa-sys included),
+# but the final link of the `wu` binary failed with
+# rust-lld: unable to find library -lasound -lxcb
+# -lxkbcommon -lxkbcommon-x11, although the link line did
+# pass -L /usr/lib/x86_64-linux-gnu. The unversioned .so
+# symlinks the -dev packages ship are missing there, the
+# same way their .pc files were. Recreate them in a
+# workspace directory we own and add it to the link path.
+ls -l /usr/lib/x86_64-linux-gnu/libasound.so* \
+      /usr/lib/x86_64-linux-gnu/libxcb.so* \
+      /usr/lib/x86_64-linux-gnu/libxkbcommon* || true
+mkdir -p .libs
+ln -sf /usr/lib/x86_64-linux-gnu/libasound.so.2 .libs/libasound.so
+ln -sf /usr/lib/x86_64-linux-gnu/libxcb.so.1 .libs/libxcb.so
+ln -sf /usr/lib/x86_64-linux-gnu/libxkbcommon.so.0 .libs/libxkbcommon.so
+# libxkbcommon-x11.so.0 itself is missing in this container
+# (the runtime package's files never land in
+# /usr/lib/x86_64-linux-gnu, same as the .pc files), so the
+# symlink above would dangle. Fetch the focal package and
+# extract the real library, then link against that.
+curl -fsSL -o /tmp/libxkbcommon-x11-0.deb http://archive.ubuntu.com/ubuntu/pool/main/libx/libxkbcommon/libxkbcommon-x11-0_0.10.0-1_amd64.deb
+dpkg-deb -x /tmp/libxkbcommon-x11-0.deb /tmp/xkbcommon-x11
+ln -sf /tmp/xkbcommon-x11/usr/lib/x86_64-linux-gnu/libxkbcommon-x11.so.0 .libs/libxkbcommon-x11.so
+export RUSTFLAGS="-L $PWD/.libs"
+# Run 41988129875: the editor linked fine, but the musl
+# remote-server phase failed in wasmtime's build script:
+# cc-rs could not find "musl-gcc", although musl-tools
+# reported "Setting up" and the focal package does ship
+# /usr/bin/musl-gcc (verified locally). Print what is
+# actually there, then make the tool findable via the
+# workspace regardless: extract the package and prepend
+# its usr/bin to PATH (harmless if the system copy exists).
+command -v musl-gcc || true
+ls -l /usr/bin/musl-gcc /usr/lib/x86_64-linux-musl/musl-gcc.specs 2>&1 || true
+ls /usr/lib/x86_64-linux-musl/ 2>&1 | head -20 || true
+curl -fsSL -o /tmp/musl-tools.deb http://archive.ubuntu.com/ubuntu/pool/universe/m/musl/musl-tools_1.1.24-1_amd64.deb
+dpkg-deb -x /tmp/musl-tools.deb /tmp/musl-tools
+export PATH="/tmp/musl-tools/usr/bin:$PATH"
+command -v musl-gcc || true
+# Run 41992919669: musl-gcc is now found, but it fails with
+# "cannot read spec file '/usr/lib/x86_64-linux-musl/musl-gcc.specs'":
+# the whole /usr/lib/x86_64-linux-musl/ directory never landed
+# (musl-dev's headers, Scrt1.o/crti.o/crtn.o, libc.a are missing
+# too). So extract musl-dev as well and provide a workspace
+# musl-gcc wrapper that uses a specs file rewritten to point
+# at the extracted copies. The specs path is baked in absolute
+# at write time because cargo build scripts run with a different
+# cwd than the workspace root.
+mkdir -p .bin .musl
+curl -fsSL -o /tmp/musl-dev.deb http://archive.ubuntu.com/ubuntu/pool/universe/m/musl/musl-dev_1.1.24-1_amd64.deb
+dpkg-deb -x /tmp/musl-dev.deb /tmp/musl-dev
+sed -e 's|/usr/lib/x86_64-linux-musl|/tmp/musl-dev/usr/lib/x86_64-linux-musl|g' \
+    -e 's|/usr/include/x86_64-linux-musl|/tmp/musl-dev/usr/include/x86_64-linux-musl|g' \
+    /tmp/musl-tools/usr/lib/x86_64-linux-musl/musl-gcc.specs > .musl/musl-gcc.specs
+printf '#!/bin/sh\nexec cc "$@" -specs "%s/.musl/musl-gcc.specs"\n' "$PWD" > .bin/musl-gcc
+chmod +x .bin/musl-gcc
+export PATH="$PWD/.bin:$PATH"
+command -v musl-gcc
+printf 'int main(){return 0;}\n' > /tmp/musl-smoke.c
+# Run 42009023678 also showed the smoke test could not execute:
+# musl-gcc links dynamically by default and the musl loader
+# /lib/ld-musl-x86_64.so.1 never landed in the container, so the
+# test binary failed with "required file not found" (and set -e
+# did not abort because the failing command sits mid-&&-chain).
+# Link it statically: that is also what wasmtime's build does.
+musl-gcc -static /tmp/musl-smoke.c -o /tmp/musl-smoke && /tmp/musl-smoke && echo MUSL_SMOKE_OK
+# Run 41998905194: wasmtime and remote_server built fine, but
+# bundle-linux died in its library-copy step with
+# "cp: cannot stat 'not'". The stray word "not" comes from
+# find_libs() in script/bundle-linux: it runs
+# `ldd .../release/wu | cut -d' ' -f3`, and for the line
+# "libxkbcommon-x11.so.0 => not found" the third field is
+# literally "not". The library is "not found" because only
+# the link-time copy in .libs exists; at runtime ldd looks
+# in system paths, where the file never landed. Point the
+# loader at the extracted copy so ldd resolves it to a real
+# path (which then also gets bundled into wu.app/lib).
+# Run 42009023678: the cp 'not' came back, but for a different
+# library this time: LD_LIBRARY_PATH did resolve
+# libxkbcommon-x11.so.0 (it now appears in the cp list as the
+# extracted path), and the remaining "not" is its dependency
+# libxcb-xkb.so.1 (verified locally: libxkbcommon-x11.so.0
+# NEEDEDs libxcb-xkb.so.1, and the focal libxcb-xkb1 package's
+# files never landed in the container either). Extract it and
+# add it to the loader path the same way.
+curl -fsSL -o /tmp/libxcb-xkb1.deb http://archive.ubuntu.com/ubuntu/pool/main/libx/libxcb/libxcb-xkb1_1.14-2_amd64.deb
+dpkg-deb -x /tmp/libxcb-xkb1.deb /tmp/xcb-xkb
+export LD_LIBRARY_PATH="$PWD/.libs:/tmp/xkbcommon-x11/usr/lib/x86_64-linux-gnu:/tmp/xcb-xkb/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+./script/bundle-linux
+# bundle-linux always produces wu-linux-x86_64.tar.gz,
+# the same name as the ubuntu-22.04 build, so rename it.
+mv target/release/wu-linux-x86_64.tar.gz \
+   target/release/wu-linux-x86_64-ubuntu2004.tar.gz
+mv target/wu-remote-server-linux-x86_64.gz \
+   target/wu-remote-server-linux-x86_64-ubuntu2004.gz
+chmod a+r target/release/wu-linux-x86_64-ubuntu2004.tar.gz \
+           target/wu-remote-server-linux-x86_64-ubuntu2004.gz
