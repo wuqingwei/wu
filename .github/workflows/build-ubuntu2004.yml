@@ -156,6 +156,18 @@ jobs:
               command -v musl-gcc
               printf 'int main(){return 0;}\n' > /tmp/musl-smoke.c
               musl-gcc /tmp/musl-smoke.c -o /tmp/musl-smoke && /tmp/musl-smoke && echo MUSL_SMOKE_OK
+              # Run 41998905194: wasmtime and remote_server built fine, but
+              # bundle-linux died in its library-copy step with
+              # "cp: cannot stat 'not'". The stray word "not" comes from
+              # find_libs() in script/bundle-linux: it runs
+              # `ldd .../release/wu | cut -d' ' -f3`, and for the line
+              # "libxkbcommon-x11.so.0 => not found" the third field is
+              # literally "not". The library is "not found" because only
+              # the link-time copy in .libs exists; at runtime ldd looks
+              # in system paths, where the file never landed. Point the
+              # loader at the extracted copy so ldd resolves it to a real
+              # path (which then also gets bundled into wu.app/lib).
+              export LD_LIBRARY_PATH="$PWD/.libs:/tmp/xkbcommon-x11/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               ./script/bundle-linux
               # bundle-linux always produces wu-linux-x86_64.tar.gz,
               # the same name as the ubuntu-22.04 build, so rename it.
