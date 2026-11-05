@@ -79,6 +79,15 @@ jobs:
               # libfontconfig.so.1 on the real Ubuntu 20.04 machine; verify
               # that when testing the artifact, not here.
               export RUST_FONTCONFIG_DLOPEN=on
+              # Diagnostic for run 41963147967 (prepared, not pushed):
+              # fontconfig was bypassed by dlopen, but alsa-sys then failed
+              # the same way (alsa.pc not found) although libasound2-dev was
+              # unpacked in this same container. Print what the -dev
+              # packages actually installed before the cargo build, so the
+              # next fix is based on evidence, not another bypass guess.
+              dpkg -L libfontconfig1-dev libasound2-dev 2>&1 | grep '\.pc' || true
+              ls /usr/lib/x86_64-linux-gnu/pkgconfig/ | grep -E 'fontconfig|alsa' || true
+              ls /usr/lib/x86_64-linux-gnu/pkgconfig/ | wc -l
               ./script/bundle-linux
               # bundle-linux always produces wu-linux-x86_64.tar.gz,
               # the same name as the ubuntu-22.04 build, so rename it.
