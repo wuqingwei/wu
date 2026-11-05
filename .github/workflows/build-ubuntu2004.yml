@@ -96,6 +96,23 @@ jobs:
               export PKG_CONFIG_PATH="$PWD/.pc:$PKG_CONFIG_PATH"
               pkg-config --modversion fontconfig alsa || true
               ls /usr/lib/x86_64-linux-gnu/pkgconfig/
+              # Run 41977772020: every crate compiled (alsa-sys included),
+              # but the final link of the `wu` binary failed with
+              # rust-lld: unable to find library -lasound -lxcb
+              # -lxkbcommon -lxkbcommon-x11, although the link line did
+              # pass -L /usr/lib/x86_64-linux-gnu. The unversioned .so
+              # symlinks the -dev packages ship are missing there, the
+              # same way their .pc files were. Recreate them in a
+              # workspace directory we own and add it to the link path.
+              ls -l /usr/lib/x86_64-linux-gnu/libasound.so* \
+                    /usr/lib/x86_64-linux-gnu/libxcb.so* \
+                    /usr/lib/x86_64-linux-gnu/libxkbcommon* || true
+              mkdir -p .libs
+              ln -sf /usr/lib/x86_64-linux-gnu/libasound.so.2 .libs/libasound.so
+              ln -sf /usr/lib/x86_64-linux-gnu/libxcb.so.1 .libs/libxcb.so
+              ln -sf /usr/lib/x86_64-linux-gnu/libxkbcommon.so.0 .libs/libxkbcommon.so
+              ln -sf /usr/lib/x86_64-linux-gnu/libxkbcommon-x11.so.0 .libs/libxkbcommon-x11.so
+              export RUSTFLAGS="-L $PWD/.libs"
               ./script/bundle-linux
               # bundle-linux always produces wu-linux-x86_64.tar.gz,
               # the same name as the ubuntu-22.04 build, so rename it.
