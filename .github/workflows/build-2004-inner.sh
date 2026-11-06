@@ -56,6 +56,15 @@ export CC=clang-18 CXX=clang++-18
 if command -v llvm-objcopy-18 >/dev/null 2>&1; then
   ln -sf "$(command -v llvm-objcopy-18)" /usr/local/bin/llvm-objcopy
 fi
+# bundle-linux (since upstream "Reduce release binary sizes") requires
+# LLD >= 12 and finds it via `clang-18 -print-prog-name=ld.lld`,
+# which resolves to the stock /usr/bin/ld.lld (LLVM 10): lld-18 only
+# ships the versioned name ld.lld-18, so the unversioned lookup never
+# sees it. Point the unversioned name at the 18 binary; the script
+# runs as root inside the container, so this write is allowed.
+if command -v ld.lld-18 >/dev/null 2>&1; then
+  ln -sf "$(command -v ld.lld-18)" /usr/bin/ld.lld
+fi
 echo stable > crates/wu/RELEASE_CHANNEL
 # Trial: make yeslogic-fontconfig-sys load libfontconfig at
 # runtime via dlopen instead of probing it with pkg-config at
