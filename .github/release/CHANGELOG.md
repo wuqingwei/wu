@@ -4,9 +4,22 @@ All notable user-facing changes to Wu are listed here, newest first.
 
 ## Unreleased
 
+## 1.1.19 - 2026-11-07
+
+- Fix jank in git panel's history.
+- Improve agent chat input UI.
+- Improve agent questions UX.
+- Smaller download and install size on macOS.
+
 ## 1.1.18 - 2026-11-06
 
-- Smaller download and install size on all platforms.
+- Smaller download and install size on Linux and Windows.
+
+| Binary | Size Before (MB) | Size Now (MB) | Change |
+|---|---|---|---|
+| wu-linux-aarch64.tar.gz | 86.3 | 54.7 | −37% |
+| wu-linux-x86_64.tar.gz | 89.4 | 57.8 | −35% |
+| Wu-x86_64.exe | 53.6 | 39.6 | −26% |
 
 ## 1.1.17 - 2026-11-06
 

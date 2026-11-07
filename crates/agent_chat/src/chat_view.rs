@@ -15,7 +15,7 @@ mod side_pane;
 mod todo_panel;
 
 use crate::{
-    AgentChatSettings, RenameChat, Send, Stop,
+    AgentChatSettings, RenameChat, Send, Stop, SubmitAnswer,
     chat_style::{
         Chip, accent, flavour_seed, flavour_word, format_elapsed, gradient_spinner, hairline, ink,
         mix, page, text_faint, ui, wash,
@@ -25,7 +25,7 @@ use crate::{
     slash_commands::{CommandToken, app_command_for_text},
     usage_rings::{ContextCard, UsageCard, context_chip, usage_chip},
 };
-use agent_harness::{ToolCall, UserInputAnswer, view};
+use agent_harness::{ToolCall, UserInputAnswer, UserInputQuestion, view};
 use i18n::{t, tc};
 use settings::{AgentChatSendKey, Settings as _};
 use gpui::Font;
@@ -158,6 +158,7 @@ pub struct ChatView {
     selected_options: HashMap<String, Vec<String>>,
     question_pages: HashMap<String, usize>,
     answer_editors: HashMap<String, (Entity<Editor>, Subscription)>,
+    question_focus: FocusHandle,
     command_menu: Option<completion::CompletionMenu>,
     mention_results: Vec<completion::MentionItem>,
     _mention_search: Task<()>,
@@ -194,7 +195,6 @@ pub struct ChatView {
     diagram_scan: (Option<bool>, HashMap<gpui::EntityId, usize>),
     diagram_sources_shown: HashSet<String>,
     editing_queued: Option<queue_panel::QueuedEdit>,
-    composer_layout: composer::ComposerLayout,
     lightbox_focus: FocusHandle,
     attachment_error: Option<SharedString>,
     staging_count: usize,
@@ -236,7 +236,7 @@ impl ChatView {
         let flavour = flavour_seed(&session.read(cx).metadata().id);
         let composer = cx.new(|cx| {
             let mut editor = Editor::auto_height(1, 10, window, cx);
-            editor.set_placeholder_text(&t!("Do anything…"), window, cx);
+            editor.set_placeholder_text(&t!("Ask the agent. @ for files, / for commands"), window, cx);
             editor.set_bar_cursor_width(px(1.), cx);
             editor.set_text_style_refinement(TextStyleRefinement {
                 font_size: Some(ui(14.).into()),
@@ -334,6 +334,7 @@ impl ChatView {
             selected_options: HashMap::default(),
             question_pages: HashMap::default(),
             answer_editors: HashMap::default(),
+            question_focus: cx.focus_handle(),
             command_menu: None,
             mention_results: Vec::new(),
             _mention_search: Task::ready(()),
@@ -370,7 +371,6 @@ impl ChatView {
             diagram_scan: Default::default(),
             diagram_sources_shown: HashSet::default(),
             editing_queued: None,
-            composer_layout: Default::default(),
             lightbox_focus: cx.focus_handle(),
             attachment_error: None,
             staging_count: 0,
@@ -401,34 +401,63 @@ impl ChatView {
                 .flat_map(|pending| &pending.questions)
                 .any(|question| &question.id == id)
         });
-        let free_text: Vec<String> = self
-            .session
-            .read(cx)
+        let focus_was_in_question = self.question_focus.is_focused(window)
+            || self
+                .answer_editors
+                .values()
+                .any(|(editor, _)| editor.focus_handle(cx).is_focused(window));
+        let has_question = !session.pending_questions().is_empty();
+        let free_text: Vec<(String, bool, bool)> = session
             .pending_questions()
             .iter()
             .filter(|pending| !pending.is_permission())
             .flat_map(|pending| &pending.questions)
-            .filter(|question| question.options.is_empty())
-            .map(|question| question.id.clone())
+            .filter(|question| question.options.is_empty() || question.accepts_typed_answer)
+            .map(|question| {
+                (
+                    question.id.clone(),
+                    question.options.is_empty(),
+                    question.multi_select,
+                )
+            })
             .collect();
-        self.answer_editors
-            .retain(|question_id, _| free_text.contains(question_id));
-        for question_id in free_text {
+        self.answer_editors.retain(|question_id, _| {
+            free_text.iter().any(|(id, _, _)| id == question_id)
+        });
+        if has_question && self.composer.focus_handle(cx).is_focused(window) {
+            window.focus(&self.question_focus, cx);
+        } else if !has_question && focus_was_in_question {
+            window.focus(&self.composer.focus_handle(cx), cx);
+        }
+        for (question_id, standalone, multi_select) in free_text {
             if self.answer_editors.contains_key(&question_id) {
                 continue;
             }
             let editor = cx.new(|cx| {
                 let mut editor = Editor::auto_height(1, 6, window, cx);
-                editor.set_placeholder_text(&t!("Type your answer…"), window, cx);
+                let (placeholder, font_size, line_height) = if standalone {
+                    (t!("Type your answer…"), 14., 22.75)
+                } else {
+                    (t!("Something else"), 13.5, 20.)
+                };
+                editor.set_placeholder_text(&placeholder, window, cx);
                 editor.set_text_style_refinement(TextStyleRefinement {
-                    font_size: Some(ui(14.).into()),
-                    line_height: Some(ui(22.75).into()),
+                    font_size: Some(ui(font_size).into()),
+                    line_height: Some(ui(line_height).into()),
                     ..Default::default()
                 });
                 editor
             });
-            let subscription = cx.subscribe(&editor, |_, _, event: &EditorEvent, cx| {
-                if matches!(event, EditorEvent::BufferEdited) {
+            let subscription = cx.subscribe(&editor, {
+                let question_id = question_id.clone();
+                move |this, editor, event: &EditorEvent, cx| {
+                    if !matches!(event, EditorEvent::BufferEdited) {
+                        return;
+                    }
+                    if !multi_select && !editor.read(cx).text(cx).trim().is_empty() {
+                        this.selected_options.remove(&question_id);
+                        this._auto_advance = Task::ready(());
+                    }
                     cx.notify();
                 }
             });
@@ -437,15 +466,21 @@ impl ChatView {
         }
     }
 
-    fn answer_labels(&self, question_id: &str, cx: &App) -> Vec<String> {
-        if let Some((editor, _)) = self.answer_editors.get(question_id) {
-            let text = editor.read(cx).text(cx).trim().to_string();
-            return if text.is_empty() { Vec::new() } else { vec![text] };
-        }
-        self.selected_options
-            .get(question_id)
+    fn answer_labels(&self, question: &UserInputQuestion, cx: &App) -> Vec<String> {
+        let mut labels = self
+            .selected_options
+            .get(&question.id)
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if (labels.is_empty() || question.multi_select)
+            && let Some((editor, _)) = self.answer_editors.get(&question.id)
+        {
+            let text = editor.read(cx).text(cx).trim().to_string();
+            if !text.is_empty() {
+                labels.push(text);
+            }
+        }
+        labels
     }
 
     fn pin_default_settings(&mut self, cx: &mut Context<Self>) {
@@ -2657,7 +2692,7 @@ impl ChatView {
                                 .child(div().min_w_0().truncate().child(project_name)),
                         ),
                     )
-                    .child(self.render_pill(true, COMPOSER_RADIUS, window, cx))
+                    .child(self.render_pill(COMPOSER_RADIUS, window, cx))
                     .child(
                         h_flex()
                             .h(px(24.))
@@ -3267,6 +3302,7 @@ impl Render for ChatView {
             .children(self.render_link_menu())
             .on_action(cx.listener(Self::send))
             .on_action(cx.listener(Self::stop))
+            .on_action(cx.listener(Self::submit_answer))
             .on_action(cx.listener(Self::select_previous_command))
             .on_action(cx.listener(Self::select_next_command))
             .on_action(cx.listener(Self::accept_command))
@@ -3282,7 +3318,6 @@ impl Render for ChatView {
                 .child(self.render_with_side_pane(new_chat, cx))
                 .into_any_element();
         }
-        let expanded = self.composer_is_expanded(window, cx);
         let composer_area = match pending.and_then(|id| {
             self.session
                 .read(cx)
@@ -3292,7 +3327,7 @@ impl Render for ChatView {
                 .map(|pending| self.render_question_panel(pending, cx))
         }) {
             Some(panel) => panel,
-            None => self.render_pill(expanded, DOCKED_COMPOSER_RADIUS, window, cx),
+            None => self.render_pill(DOCKED_COMPOSER_RADIUS, window, cx),
         };
         let chat = v_flex()
             .size_full()
@@ -3320,6 +3355,9 @@ impl Focusable for ChatView {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         if self.subagent.is_some() {
             return self.focus_handle.clone();
+        }
+        if !self.session.read(cx).pending_questions().is_empty() {
+            return self.question_focus.clone();
         }
         self.composer.focus_handle(cx)
     }

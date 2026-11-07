@@ -7,55 +7,22 @@ use crate::{
 use i18n::t;
 
 const NEW_CHAT_TEXTAREA_MIN: f32 = 76.;
-const THREAD_TEXTAREA_MIN: f32 = 60.;
 const TEXTAREA_MAX: f32 = 260.;
 const ACTIONS_ROW_HEIGHT: f32 = 42.;
-const COMPACT_ROW_HEIGHT: f32 = 47.;
 const ACTION_BUTTON_SIZE: f32 = 28.;
-const ACTION_UTILITY_GAP: f32 = 2.;
 const ACTION_PRIMARY_GAP: f32 = 8.;
 const MODEL_CHIP_PADDING: f32 = 6.;
-const COMPACT_ACTION_INSET: f32 = 8.;
-const EXPANDED_ACTION_INSET: f32 = 12.;
+const ACTION_INSET: f32 = 12.;
 const MODEL_CHIP_MAX_FRACTION: f32 = 0.45;
 const TRAY_RADIUS: f32 = 16.;
 pub(super) const TRAY_SIDE_INSET: f32 = 16.;
 pub(super) const TRAY_COMPOSER_OVERLAP: f32 = 18.;
-const COLLAPSE_HYSTERESIS: f32 = 32.;
 const QUESTION_LINE_HEIGHT: f32 = 20.;
 const QUESTION_COLLAPSED_LINES: usize = 4;
 const QUESTION_COLLAPSE_CHARS: usize = 160;
 const QUESTION_EXPANDED_FRACTION: f32 = 0.4;
 const QUESTION_EXPANDED_FALLBACK: f32 = 280.;
 const QUESTION_OPTIONS_FRACTION: f32 = 0.3;
-
-#[derive(Default)]
-pub(super) struct ComposerLayout {
-    expanded: bool,
-    compact_capacity: Option<f32>,
-    expanded_anchor: Option<f32>,
-    width_before_flip: Option<f32>,
-}
-
-fn composer_flip(expanded: bool, wraps: bool, text_width: f32, capacity: Option<f32>) -> bool {
-    match capacity {
-        Some(capacity) if expanded => text_width >= capacity - COLLAPSE_HYSTERESIS,
-        _ => wraps,
-    }
-}
-
-fn single_line_width(text: &str, font: Font, window: &Window) -> f32 {
-    let font_size = ui(14.).to_pixels(window.rem_size());
-    let run = TextRun {
-        len: text.len(),
-        font,
-        ..Default::default()
-    };
-    let line = window
-        .text_system()
-        .shape_line(text.to_string().into(), font_size, &[run], None);
-    f32::from(line.width)
-}
 
 pub(super) fn tray_surface(cx: &App) -> gpui::Div {
     div()
@@ -81,16 +48,6 @@ impl ChatView {
         let effort = selection.reasoning.map(view::reasoning_label);
         let fast = selection.fast_on();
         let colors = cx.theme().colors();
-        let permission = settings.permission.for_harness(kind.harness_id());
-        let permission_label = format!(
-            "({})",
-            view::permission_label(permission, kind.harness_id())
-        );
-        let permission_color = if permission == agent_harness::PermissionMode::FullAccess {
-            cx.theme().status().error
-        } else {
-            colors.text_muted.opacity(0.7)
-        };
         let brand = match kind {
             AgentKind::Codex | AgentKind::Opencode => agent_icon(kind).color(Color::Muted),
             AgentKind::Claude => agent_icon(kind),
@@ -105,7 +62,7 @@ impl ChatView {
         .trigger(
             Chip::new(
                 "agent-model-chip",
-                8.,
+                16.,
                 h_flex()
                     .h(px(32.))
                     .max_w(px(248.))
@@ -113,7 +70,7 @@ impl ChatView {
                     .px(px(MODEL_CHIP_PADDING))
                     .gap(px(6.))
                     .text_size(ui(12.))
-                    .font_weight(FontWeight::MEDIUM)
+                    .font_weight(FontWeight::NORMAL)
                     .child(brand)
                     .child(div().min_w_0().truncate().child(model_label))
                     .when_some(effort, |this, effort| {
@@ -129,15 +86,10 @@ impl ChatView {
                                 .child(effort),
                         )
                     })
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_color(permission_color)
-                            .child(permission_label),
-                    )
                     .when(fast, |this| {
                         this.child(icon(IconName::AgentFastFilled, px(13.), accent(cx)))
-                    }),
+                    })
+                    .child(icon(IconName::AgentArrowDown, px(12.), colors.text_muted)),
             )
             .shrinkable()
             .text_colors(colors.text.opacity(0.9), colors.text),
@@ -204,56 +156,6 @@ impl ChatView {
             .into_any_element()
     }
 
-    pub(super) fn composer_is_expanded(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let text = self.composer.read(cx).text(cx);
-        let (wraps, width, font) = self.composer.update(cx, |editor, cx| {
-            let wraps = editor
-                .snapshot(window, cx)
-                .display_snapshot
-                .max_point()
-                .row()
-                .0
-                > 0;
-            let width = editor.display_map.read(cx).wrap_width(cx).map(f32::from);
-            (wraps, width, editor.style(cx).text.font())
-        });
-        let layout = &mut self.composer_layout;
-        let fresh_width = width.filter(|width| Some(*width) != layout.width_before_flip);
-        if let Some(width) = fresh_width {
-            layout.width_before_flip = None;
-            if layout.expanded {
-                layout.expanded_anchor.get_or_insert(width);
-            } else {
-                layout.compact_capacity = Some(width);
-            }
-        }
-        let capacity = layout.compact_capacity.map(|capacity| {
-            match (layout.expanded_anchor, fresh_width) {
-                (Some(anchor), Some(width)) => capacity + width - anchor,
-                _ => capacity,
-            }
-        });
-        let next = if text.contains('\n') {
-            true
-        } else {
-            let text_width = match capacity {
-                Some(_) if layout.expanded => single_line_width(&text, font, window),
-                _ => 0.,
-            };
-            composer_flip(layout.expanded, wraps, text_width, capacity)
-        };
-        if next != layout.expanded {
-            layout.expanded = next;
-            layout.width_before_flip = width;
-            layout.expanded_anchor = None;
-        }
-        next
-    }
-
     fn render_attach_button(&self, dictating: bool, cx: &Context<Self>) -> impl IntoElement {
         let hover = ink(0.10, cx);
         let muted = cx.theme().colors().text_muted;
@@ -275,7 +177,7 @@ impl ChatView {
             .child(if dictating {
                 icon(IconName::AgentClose, px(16.), muted)
             } else {
-                icon(IconName::AgentPaperclip, px(18.), muted)
+                icon(IconName::Plus, px(18.), muted)
             })
             .on_click(cx.listener(move |this, _, window, cx| {
                 if dictating {
@@ -288,7 +190,6 @@ impl ChatView {
 
     pub(super) fn render_pill(
         &self,
-        expanded: bool,
         radius: f32,
         window: &Window,
         cx: &Context<Self>,
@@ -310,25 +211,10 @@ impl ChatView {
         };
         let dictating = self.dictation_active();
         let microphone = self.render_dictation_button(cx);
-        let model_gap = if microphone.is_some() {
-            ACTION_PRIMARY_GAP - MODEL_CHIP_PADDING
-        } else {
-            ACTION_PRIMARY_GAP
-        };
-        let inset = if expanded {
-            EXPANDED_ACTION_INSET
-        } else {
-            COMPACT_ACTION_INSET
-        };
         let voice_track = if microphone.is_some() {
-            let leading = inset + ACTION_BUTTON_SIZE + dictation::VOICE_TRACK_GAP;
+            let leading = ACTION_INSET + ACTION_BUTTON_SIZE + dictation::VOICE_TRACK_GAP;
             let trailing = leading + ACTION_BUTTON_SIZE + ACTION_PRIMARY_GAP;
-            let top = if expanded {
-                2.
-            } else {
-                (COMPACT_ROW_HEIGHT - dictation::VOICE_TRACK_HEIGHT) / 2.
-            };
-            self.render_voice_track(leading, trailing, top, cx)
+            self.render_voice_track(leading, trailing, 2., cx)
         } else {
             None
         };
@@ -343,9 +229,7 @@ impl ChatView {
             .gap(px(ACTION_PRIMARY_GAP))
             .children(microphone)
             .child(self.render_send_button(cx));
-        let attach = h_flex()
-            .gap(px(ACTION_UTILITY_GAP))
-            .child(self.render_attach_button(dictating, cx));
+        let textarea_min = if new_chat { NEW_CHAT_TEXTAREA_MIN } else { 0. };
         let pill = div()
             .key_context(key_context)
             .relative()
@@ -363,19 +247,13 @@ impl ChatView {
             .shadow_lg()
             .flex()
             .flex_col()
-            .children(self.render_attachment_strip(cx));
-        let pill = if expanded {
-            let textarea_min = if new_chat {
-                NEW_CHAT_TEXTAREA_MIN
-            } else {
-                THREAD_TEXTAREA_MIN
-            };
-            pill.child(
+            .children(self.render_attachment_strip(cx))
+            .child(
                 div()
                     .flex_none()
                     .px(px(16.))
                     .pt(px(16.))
-                    .pb(px(4.))
+                    .pb(px(10.))
                     .min_h(px(textarea_min))
                     .max_h(px(TEXTAREA_MAX))
                     .child(self.composer.clone()),
@@ -386,32 +264,19 @@ impl ChatView {
                     .h(px(ACTIONS_ROW_HEIGHT))
                     .pt(px(2.))
                     .pb(px(8.))
-                    .px(px(inset))
-                    .gap(px(model_gap))
-                    .child(attach.flex_1().min_w_0())
-                    .child(model_picker)
-                    .child(trailing)
-                    .children(voice_track),
-            )
-        } else {
-            pill.justify_end().child(
-                h_flex()
-                    .relative()
-                    .h(px(COMPACT_ROW_HEIGHT))
-                    .child(attach.flex_none().pl(px(inset)))
+                    .px(px(ACTION_INSET))
+                    .gap(px(ACTION_PRIMARY_GAP))
                     .child(
-                        div()
+                        h_flex()
                             .flex_1()
                             .min_w_0()
-                            .px(px(8.))
-                            .opacity(beneath_voice)
-                            .child(self.composer.clone()),
+                            .gap(px(ACTION_PRIMARY_GAP))
+                            .child(self.render_attach_button(dictating, cx))
+                            .child(model_picker),
                     )
-                    .child(model_picker)
-                    .child(trailing.pl(px(model_gap)).pr(px(inset)))
+                    .child(trailing)
                     .children(voice_track),
-            )
-        };
+            );
         v_flex()
             .w_full()
             .gap(px(8.))
@@ -628,6 +493,46 @@ impl ChatView {
         });
     }
 
+    pub(super) fn submit_answer(&mut self, _: &SubmitAnswer, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(pending) = self.session.read(cx).pending_questions().first() else {
+            return;
+        };
+        if pending.is_permission() {
+            return;
+        }
+        let pending_id = pending.id().to_string();
+        let count = pending.questions.len();
+        let page_index = self
+            .question_pages
+            .get(&pending_id)
+            .copied()
+            .unwrap_or(0)
+            .min(count.saturating_sub(1));
+        let Some(question) = pending.questions.get(page_index) else {
+            return;
+        };
+        if self.answer_labels(question, cx).is_empty() {
+            return;
+        }
+        self.advance_question(&pending_id, page_index, count, cx);
+    }
+
+    fn advance_question(
+        &mut self,
+        pending_id: &str,
+        page_index: usize,
+        count: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if page_index + 1 >= count {
+            self.submit_answers(pending_id, cx);
+        } else {
+            self.question_pages
+                .insert(pending_id.to_string(), page_index + 1);
+            cx.notify();
+        }
+    }
+
     pub(super) fn submit_answers(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(pending) = self
             .session
@@ -643,7 +548,7 @@ impl ChatView {
             .iter()
             .map(|question| UserInputAnswer {
                 question_id: question.id.clone(),
-                labels: self.answer_labels(&question.id, cx),
+                labels: self.answer_labels(question, cx),
             })
             .collect();
         for answer in &answers {
@@ -658,7 +563,7 @@ impl ChatView {
         &self,
         key: SharedString,
         number: usize,
-        label: SharedString,
+        label: AnyElement,
         picked: bool,
         cx: &App,
     ) -> gpui::Stateful<gpui::Div> {
@@ -807,13 +712,14 @@ impl ChatView {
             .get(&question.id)
             .cloned()
             .unwrap_or_default();
-        let answer_editor = self
+        let typed_editor = self
             .answer_editors
             .get(&question.id)
             .map(|(editor, _)| editor.clone());
-        let options: Vec<AnyElement> = if answer_editor.is_some() {
-            Vec::new()
-        } else if is_permission {
+        let answer_editor = typed_editor
+            .clone()
+            .filter(|_| question.options.is_empty());
+        let options: Vec<AnyElement> = if is_permission {
             [(t!("Allow"), true), (t!("Deny"), false)]
                 .into_iter()
                 .enumerate()
@@ -822,7 +728,7 @@ impl ChatView {
                     self.render_option_row(
                         format!("permission-{pending_id}-{position}").into(),
                         position + 1,
-                        label,
+                        label.into_any_element(),
                         false,
                         cx,
                     )
@@ -848,7 +754,7 @@ impl ChatView {
                     self.render_option_row(
                         format!("option-{}-{position}", question.id).into(),
                         position + 1,
-                        option.clone().into(),
+                        option.clone().into_any_element(),
                         picked,
                         cx,
                     )
@@ -864,9 +770,28 @@ impl ChatView {
                     }))
                     .into_any_element()
                 })
+                .chain(
+                    typed_editor
+                        .filter(|_| !question.options.is_empty())
+                        .map(|editor| {
+                            let typed = !editor.read(cx).text(cx).trim().is_empty()
+                                && (question.multi_select || selected.is_empty());
+                            let focus = editor.focus_handle(cx);
+                            self.render_option_row(
+                                format!("option-{}-typed", question.id).into(),
+                                question.options.len() + 1,
+                                editor.into_any_element(),
+                                typed,
+                                cx,
+                            )
+                            .cursor_text()
+                            .on_click(move |_, window, cx| window.focus(&focus, cx))
+                            .into_any_element()
+                        }),
+                )
                 .collect()
         };
-        let answered = !self.answer_labels(&question.id, cx).is_empty();
+        let answered = !self.answer_labels(question, cx).is_empty();
         let is_last_page = page_index + 1 >= count;
         let header = if is_permission {
             t!("Permission").to_string()
@@ -883,7 +808,15 @@ impl ChatView {
             .map_or(px(QUESTION_EXPANDED_FALLBACK), |bounds| {
                 bounds.size.height * QUESTION_OPTIONS_FRACTION
             });
+        let question_focus = self.question_focus.clone();
+        let mut key_context = KeyContext::default();
+        key_context.add("AgentQuestion");
+        if AgentChatSettings::get_global(cx).send_with == AgentChatSendKey::ModifierEnter {
+            key_context.add("send_with_modifier");
+        }
         v_flex()
+            .track_focus(&self.question_focus)
+            .key_context(key_context)
             .w_full()
             .rounded(px(COMPOSER_RADIUS))
             .border_1()
@@ -983,57 +916,57 @@ impl ChatView {
                     } else {
                         div().into_any_element()
                     })
-                    .when(!is_permission, |this| {
-                        let pending_id = pending_id.clone();
-                        this.child(
-                            div()
-                                .id("agent-question-next")
-                                .px(px(16.))
-                                .py(px(6.))
-                                .rounded(px(8.))
-                                .bg(colors.text)
-                                .text_size(ui(13.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(page(cx))
-                                .when(!answered, |this| this.opacity(0.4))
-                                .when(answered, |this| {
-                                    this.cursor_pointer()
-                                        .hover(|style| style.opacity(0.9))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            if is_last_page {
-                                                this.submit_answers(&pending_id, cx);
-                                            } else {
-                                                this.question_pages
-                                                    .insert(pending_id.to_string(), page_index + 1);
-                                                cx.notify();
-                                            }
-                                        }))
-                                })
-                                .child(if is_last_page {
-                                    t!("Submit")
-                                } else {
-                                    t!("Next")
-                                }),
-                        )
-                    }),
+                    .child(
+                        h_flex()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .id("agent-question-stop")
+                                    .px(px(12.))
+                                    .py(px(6.))
+                                    .rounded(px(8.))
+                                    .cursor_pointer()
+                                    .text_size(ui(13.))
+                                    .text_color(colors.text_muted)
+                                    .hover(move |style| style.bg(back_hover).text_color(colors.text))
+                                    .tooltip(move |_, cx| {
+                                        Tooltip::for_action_in(t!("Stop"), &Stop, &question_focus, cx)
+                                    })
+                                    .child(t!("Stop"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.stop(&Stop, window, cx)
+                                    })),
+                            )
+                            .when(!is_permission, |this| {
+                                let pending_id = pending_id.clone();
+                                this.child(
+                                    div()
+                                        .id("agent-question-next")
+                                        .px(px(16.))
+                                        .py(px(6.))
+                                        .rounded(px(8.))
+                                        .bg(colors.text)
+                                        .text_size(ui(13.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(page(cx))
+                                        .when(!answered, |this| this.opacity(0.4))
+                                        .when(answered, |this| {
+                                            this.cursor_pointer()
+                                                .hover(|style| style.opacity(0.9))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.advance_question(&pending_id, page_index, count, cx)
+                                                }))
+                                        })
+                                        .child(if is_last_page {
+                                            t!("Submit")
+                                        } else {
+                                            t!("Next")
+                                        }),
+                                )
+                            })
+                    ),
             )
             .into_any_element()
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn expanding_and_collapsing_do_not_share_a_threshold() {
-        let capacity = Some(300.);
-        assert!(!composer_flip(false, false, 0., capacity));
-        assert!(composer_flip(false, true, 0., capacity));
-        let in_band = 300. - COLLAPSE_HYSTERESIS + 1.;
-        assert!(composer_flip(true, false, in_band, capacity));
-        assert!(!composer_flip(true, false, 300. - COLLAPSE_HYSTERESIS - 1., capacity));
-        assert!(composer_flip(true, true, 0., None));
-        assert!(!composer_flip(true, false, 0., None));
-    }
-}
