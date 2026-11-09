@@ -631,12 +631,109 @@ async fn test_fake_fs_rename_ignore_if_exists_leaves_source_and_target_unchanged
         "from target"
     );
 
-    // An ignored rename must not be recorded as a move either, or a handle held
-    // across it reports a path its file never went to.
-    assert!(
-        handle.current_path(&(fs.clone() as Arc<dyn Fs>)).is_err(),
-        "an ignored rename should not record a move"
+    // A handle held across an ignored rename must keep reporting the path the
+    // file is actually at, not the one it never went to.
+    assert_eq!(
+        handle.current_path(&(fs.clone() as Arc<dyn Fs>)).unwrap(),
+        PathBuf::from(path!("/root/source.txt"))
     );
+}
+
+async fn assert_copy_and_remove_semantics(root: &Path, fs: &dyn Fs) {
+    let source = root.join("source.txt");
+    let target = root.join("target.txt");
+    let overwrite = CopyOptions {
+        overwrite: true,
+        ignore_if_exists: false,
+    };
+
+    let target_inode_before = fs.metadata(&target).await.unwrap().unwrap().inode;
+    fs.copy_file(&source, &target, overwrite).await.unwrap();
+    assert_eq!(fs.load(&target).await.unwrap(), "from source");
+
+    cfg_select! {
+        unix => assert_eq!(
+            fs.metadata(&target).await.unwrap().unwrap().inode,
+            target_inode_before
+        ),
+        _ => { let _ = target_inode_before; }
+    }
+
+    fs.copy_file(&source, &target, CopyOptions::default())
+        .await
+        .unwrap_err();
+    fs.copy_file(
+        &source,
+        &target,
+        CopyOptions {
+            overwrite: false,
+            ignore_if_exists: true,
+        },
+    )
+    .await
+    .unwrap();
+
+    fs.copy_file(&source, &root.join("dir"), overwrite)
+        .await
+        .unwrap_err();
+    assert!(fs.is_dir(&root.join("dir")).await);
+}
+
+/// Removing a symlink to a directory removes the link, not the directory.
+async fn assert_remove_file_unlinks_symlink(root: &Path, fs: &dyn Fs) {
+    let link = root.join("link");
+    fs.remove_file(&link, RemoveOptions::default())
+        .await
+        .unwrap();
+    assert!(fs.metadata(&link).await.unwrap().is_none());
+    assert!(fs.is_dir(&root.join("dir")).await);
+    assert_eq!(
+        fs.load(&root.join("dir").join("inner.txt")).await.unwrap(),
+        "inner"
+    );
+}
+
+#[gpui::test]
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+async fn test_realfs_copy_and_remove_semantics(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let executor = cx.executor();
+    let temp_dir = TempDir::new().unwrap();
+    let root = temp_dir.path();
+    std::fs::write(root.join("source.txt"), "from source").unwrap();
+    std::fs::write(root.join("target.txt"), "from target").unwrap();
+    std::fs::create_dir(root.join("dir")).unwrap();
+    std::fs::write(root.join("dir").join("inner.txt"), "inner").unwrap();
+
+    let fs = RealFs::new(None, executor);
+    assert_copy_and_remove_semantics(root, &fs).await;
+
+    // Creating symlinks requires elevated privileges on Windows, so like the
+    // watcher tests above, skip that part when it is not possible.
+    match make_dir_symlink(&root.join("dir"), &root.join("link")) {
+        Ok(()) => assert_remove_file_unlinks_symlink(root, &fs).await,
+        Err(error) => eprintln!("skipping symlink removal check (cannot symlink: {error})"),
+    }
+}
+
+#[gpui::test]
+async fn test_fake_fs_copy_and_remove_semantics(executor: BackgroundExecutor) {
+    let fs = FakeFs::new(executor);
+    fs.insert_tree(
+        path!("/root"),
+        json!({
+            "source.txt": "from source",
+            "target.txt": "from target",
+            "dir": { "inner.txt": "inner" },
+        }),
+    )
+    .await;
+    fs.insert_symlink(path!("/root/link"), PathBuf::from(path!("/root/dir")))
+        .await;
+
+    let root = Path::new(path!("/root"));
+    assert_copy_and_remove_semantics(root, fs.as_ref()).await;
+    assert_remove_file_unlinks_symlink(root, fs.as_ref()).await;
 }
 
 #[gpui::test]
@@ -664,6 +761,49 @@ async fn test_fake_fs_rename_onto_itself_keeps_the_file(executor: BackgroundExec
 
     assert!(result.is_ok());
     assert_eq!(fs.load(path).await.unwrap(), "content");
+}
+
+#[gpui::test]
+#[cfg(unix)]
+async fn test_realfs_executable_metadata(executor: BackgroundExecutor) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let tempdir = TempDir::new().unwrap();
+    let path = tempdir.path();
+    let non_executable_path = path.join("non-executable.sh");
+    let executable_path = path.join("executable.sh");
+    let symlink_path = path.join("executable-symlink.sh");
+
+    std::fs::write(&non_executable_path, "#!/bin/sh\n").unwrap();
+    std::fs::write(&executable_path, "#!/bin/sh\n").unwrap();
+    let mut permissions = std::fs::metadata(&executable_path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&executable_path, permissions).unwrap();
+
+    let fs = RealFs::new(None, executor);
+    gpui::block_on(fs.create_symlink(&symlink_path, PathBuf::from("executable.sh"))).unwrap();
+
+    let non_executable_metadata = fs
+        .metadata(&non_executable_path)
+        .await
+        .expect("metadata call succeeds")
+        .expect("metadata returned");
+    assert!(!non_executable_metadata.is_executable);
+
+    let executable_metadata = fs
+        .metadata(&executable_path)
+        .await
+        .expect("metadata call succeeds")
+        .expect("metadata returned");
+    assert!(executable_metadata.is_executable);
+
+    let symlink_metadata = fs
+        .metadata(&symlink_path)
+        .await
+        .expect("metadata call succeeds")
+        .expect("metadata returned");
+    assert!(symlink_metadata.is_symlink);
+    assert!(symlink_metadata.is_executable);
 }
 
 #[gpui::test]

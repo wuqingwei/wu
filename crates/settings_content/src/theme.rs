@@ -210,17 +210,18 @@ pub struct ThemeSettingsContent {
     #[schemars(default = "default_font_features")]
     pub buffer_font_features: Option<FontFeaturesContent>,
     pub git_commit_buffer_font_size: Option<FontSize>,
-    /// The name of a font to use for rendering in the markdown preview.
-    /// Falls back to the UI font if unset.
+    /// Moved to `markdown_preview.font_family`. Still read so existing settings keep working.
+    #[schemars(skip)]
     pub markdown_preview_font_family: Option<FontFamilyName>,
-    /// The name of a font to use for code (code blocks and inline code) in the
-    /// markdown preview. Falls back to the buffer font if unset.
+    /// Moved to `markdown_preview.code_font_family`.
+    #[schemars(skip)]
     pub markdown_preview_code_font_family: Option<FontFamilyName>,
-    /// The font size to use for rendering in the markdown preview.
-    /// Falls back to the UI font size if unset.
+    /// Moved to `markdown_preview.font_size`.
+    #[schemars(skip)]
     pub markdown_preview_font_size: Option<FontSize>,
-    /// The theme to use for the markdown preview.
-    /// Falls back to the main editor theme if unset.
+    /// Moved to `markdown_preview.theme`.
+    #[serde(skip_serializing)]
+    #[schemars(skip)]
     pub markdown_preview_theme: Option<ThemeSelection>,
     /// The name of the Wu theme to use.
     pub theme: Option<ThemeSelection>,
@@ -879,6 +880,10 @@ pub struct ThemeColorsContent {
     #[serde(rename = "editor.foreground")]
     pub editor_foreground: Option<ThemeColor>,
 
+    /// Text color used for CodeLens items in the editor.
+    #[serde(rename = "editor.code_lens.foreground")]
+    pub editor_code_lens_foreground: Option<ThemeColor>,
+
     #[serde(rename = "editor.background")]
     pub editor_background: Option<ThemeColor>,
 
@@ -1337,6 +1342,8 @@ pub enum WindowBackgroundContent {
     Opaque,
     Transparent,
     Blurred,
+    MicaBackdrop,
+    MicaAltBackdrop,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, MergeFrom, PartialEq)]

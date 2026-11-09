@@ -151,8 +151,9 @@ pub use buffer_store::ProjectTransaction;
 pub use lsp_command::{CallHierarchyItem, IncomingCall, OutgoingCall};
 pub use lsp_store::{
     DiagnosticSummary, InvalidationStrategy, LanguageServerLogType, LanguageServerProgress,
-    LanguageServerPromptRequest, LanguageServerStatus, LanguageServerToQuery, LspStore,
-    LspStoreEvent, ProgressToken, SERVER_PROGRESS_THROTTLE_TIMEOUT,
+    LanguageServerPromptRequest, LanguageServerShowDocumentRequest, LanguageServerStatus,
+    LanguageServerToQuery, LspStore, LspStoreEvent, ProgressToken,
+    SERVER_PROGRESS_THROTTLE_TIMEOUT,
 };
 pub use toolchain_store::{ToolchainStore, Toolchains};
 const MAX_PROJECT_SEARCH_HISTORY_SIZE: usize = 500;
@@ -275,7 +276,9 @@ pub struct ToastLink {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     LanguageServerAdded(LanguageServerId, LanguageServerName, Option<WorktreeId>),
+    SupplementaryLanguageServerAdded(LanguageServerId, LanguageServerName),
     LanguageServerRemoved(LanguageServerId),
+    SupplementaryLanguageServerRemoved(LanguageServerId),
     LanguageServerLog(LanguageServerId, LanguageServerLogType, String),
     // [`lsp::notification::DidOpenTextDocument`] was sent to this server using the buffer data.
     // Zed's buffer-related data is updated accordingly.
@@ -300,6 +303,7 @@ pub enum Event {
         notification_id: SharedString,
     },
     LanguageServerPrompt(LanguageServerPromptRequest),
+    LanguageServerShowDocument(LanguageServerShowDocumentRequest),
     LanguageNotFound(Entity<Buffer>),
     ActiveEntryChanged(Option<ProjectEntryId>),
     ActivateProjectPanel,
@@ -435,7 +439,7 @@ impl InlayId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct InlayHint {
     pub position: language::Anchor,
     pub label: InlayHintLabel,
@@ -769,17 +773,18 @@ impl InlayHint {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum InlayHintLabel {
     String(String),
     LabelParts(Vec<InlayHintLabelPart>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct InlayHintLabelPart {
     pub value: String,
     pub tooltip: Option<InlayHintLabelPartTooltip>,
     pub location: Option<(LanguageServerId, lsp::Location)>,
+    pub command: Option<(LanguageServerId, lsp::Command)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1449,6 +1454,8 @@ impl Project {
             remote_proto.add_entity_message_handler(Self::handle_update_project);
             remote_proto.add_entity_message_handler(Self::handle_toast);
             remote_proto.add_entity_request_handler(Self::handle_language_server_prompt_request);
+            remote_proto
+                .add_entity_request_handler(Self::handle_language_server_show_document_request);
             remote_proto.add_entity_message_handler(Self::handle_hide_toast);
             remote_proto.add_entity_request_handler(Self::handle_update_buffer_from_remote_server);
             remote_proto.add_entity_request_handler(Self::handle_trust_worktrees);
@@ -2716,8 +2723,14 @@ impl Project {
             LspStoreEvent::LanguageServerAdded(server_id, name, worktree_id) => cx.emit(
                 Event::LanguageServerAdded(*server_id, name.clone(), *worktree_id),
             ),
+            LspStoreEvent::SupplementaryLanguageServerAdded(server_id, name) => cx.emit(
+                Event::SupplementaryLanguageServerAdded(*server_id, name.clone()),
+            ),
             LspStoreEvent::LanguageServerRemoved(server_id) => {
                 cx.emit(Event::LanguageServerRemoved(*server_id))
+            }
+            LspStoreEvent::SupplementaryLanguageServerRemoved(server_id) => {
+                cx.emit(Event::SupplementaryLanguageServerRemoved(*server_id))
             }
             LspStoreEvent::LanguageServerLog(server_id, log_type, string) => cx.emit(
                 Event::LanguageServerLog(*server_id, log_type.clone(), string.clone()),
@@ -2764,6 +2777,9 @@ impl Project {
             }
             LspStoreEvent::LanguageServerPrompt(prompt) => {
                 cx.emit(Event::LanguageServerPrompt(prompt.clone()))
+            }
+            LspStoreEvent::LanguageServerShowDocument(request) => {
+                cx.emit(Event::LanguageServerShowDocument(request.clone()))
             }
             LspStoreEvent::DiskBasedDiagnosticsStarted { language_server_id } => {
                 cx.emit(Event::DiskBasedDiagnosticsStarted {
@@ -4425,6 +4441,49 @@ impl Project {
         })
     }
 
+    async fn handle_language_server_show_document_request(
+        project: Entity<Self>,
+        envelope: TypedEnvelope<proto::LanguageServerShowDocumentRequest>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::Ack> {
+        let payload = envelope.payload;
+        let selection = payload.selection_start.zip(payload.selection_end).map(
+            |(selection_start, selection_end)| lsp::Range {
+                start: lsp::Position {
+                    line: selection_start.row,
+                    character: selection_start.column,
+                },
+                end: lsp::Position {
+                    line: selection_end.row,
+                    character: selection_end.column,
+                },
+            },
+        );
+        let uri = lsp::Uri::from_str(&payload.uri)
+            .with_context(|| format!("parsing show document uri {}", payload.uri))?;
+        let (tx, rx) = async_channel::bounded(1);
+        project.update(&mut cx, |_, cx| {
+            cx.emit(Event::LanguageServerShowDocument(
+                LanguageServerShowDocumentRequest {
+                    uri,
+                    external: payload.external,
+                    take_focus: payload.take_focus,
+                    selection,
+                    response_channel: tx,
+                },
+            ));
+        });
+        drop(project);
+
+        let success = rx.recv().await.unwrap_or(false);
+        anyhow::ensure!(
+            success,
+            "show document request for {} was not handled successfully",
+            payload.uri
+        );
+        Ok(proto::Ack {})
+    }
+
     async fn handle_hide_toast(
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::HideToast>,
@@ -4762,13 +4821,6 @@ impl Project {
         self.worktree_store.update(cx, |worktree_store, cx| {
             worktree_store.set_worktrees_from_proto(worktrees, self.replica_id(), cx)
         })
-    }
-
-    pub fn supplementary_language_servers<'a>(
-        &'a self,
-        cx: &'a App,
-    ) -> impl 'a + Iterator<Item = (LanguageServerId, LanguageServerName)> {
-        self.lsp_store.read(cx).supplementary_language_servers()
     }
 
     pub fn any_language_server_supports_inlay_hints(&self, buffer: &Buffer, cx: &mut App) -> bool {

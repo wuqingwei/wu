@@ -47,6 +47,15 @@ pub const SUBPIXEL_VARIANTS_X: u8 = 4;
 /// Number of subpixel glyph variants along the Y axis.
 pub const SUBPIXEL_VARIANTS_Y: u8 = 1;
 
+// Leave enough room below the underline for its stroke while keeping it below the baseline.
+const UNDERLINE_DESCENT_OFFSET_FACTOR: f32 = 0.618;
+
+/// Returns the vertical offset used to paint an underline within a line.
+pub fn underline_y_offset(line_height: Pixels, ascent: Pixels, descent: Pixels) -> Pixels {
+    let padding_top = (line_height - ascent - descent) / 2.;
+    padding_top + ascent + descent * UNDERLINE_DESCENT_OFFSET_FACTOR
+}
+
 /// The GPUI text rendering sub system.
 pub struct TextSystem {
     platform_text_system: Arc<dyn PlatformTextSystem>,
@@ -71,7 +80,7 @@ impl TextSystem {
             fallback_font_stack: smallvec![
                 // TODO: Remove this when Linux have implemented setting fallbacks.
                 font("JetBrains Mono"),
-                font("Geist"),
+                font("Inter"),
                 font("Helvetica"),
                 font("Segoe UI"),     // Windows
                 font("Ubuntu"),       // Gnome (Ubuntu)
@@ -84,15 +93,11 @@ impl TextSystem {
         }
     }
 
-    /// Get a list of all available font names from the operating system.
+    /// Get sorted, unique font family names available to the platform text system.
+    ///
+    /// Includes fonts registered with [`Self::add_fonts`].
     pub fn all_font_names(&self) -> Vec<String> {
         let mut names = self.platform_text_system.all_font_names();
-        names.extend(
-            self.fallback_font_stack
-                .iter()
-                .map(|font| font.family.to_string()),
-        );
-        names.push(".SystemUIFont".to_string());
         names.sort_unstable();
         names.dedup();
         names
@@ -1196,7 +1201,7 @@ pub fn font_name_with_fallbacks<'a>(name: &'a str, system: &'a str) -> &'a str {
     // Old Zed font names, kept so user settings that still name them resolve.
     match name {
         ".SystemUIFont" => system,
-        ".ZedSans" | "Zed Plex Sans" => "IBM Plex Sans",
+        ".ZedSans" | "Zed Plex Sans" => "Inter",
         ".ZedMono" | "Zed Plex Mono" => "JetBrains Mono",
         _ => name,
     }
@@ -1211,7 +1216,7 @@ pub fn font_name_with_fallbacks_shared<'a>(
     // Old Zed font names, kept so user settings that still name them resolve.
     match name.as_str() {
         ".SystemUIFont" => system,
-        ".ZedSans" | "Zed Plex Sans" => const { &SharedString::new_static("IBM Plex Sans") },
+        ".ZedSans" | "Zed Plex Sans" => const { &SharedString::new_static("Inter") },
         ".ZedMono" | "Zed Plex Mono" => const { &SharedString::new_static("JetBrains Mono") },
         _ => name,
     }

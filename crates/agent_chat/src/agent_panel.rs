@@ -44,7 +44,7 @@ const LIST_PAD_TOP: f32 = 4.0;
 const SECTION_GAP: f32 = 12.0;
 const DISCLOSURE_HEADER_HEIGHT: f32 = 28.0;
 const DISCLOSURE_BODY_INSET: f32 = 4.0;
-const HEADER_CONTROL_SIZE: f32 = 29.0;
+pub(crate) const HEADER_CONTROL_SIZE: f32 = 29.0;
 const HARNESS_ICON_SIZE: f32 = 13.0;
 const COMPACT_TIME_WIDTH: f32 = 30.0;
 const LABEL_FADE_BAND: f32 = 20.0;
@@ -88,7 +88,7 @@ pub fn init(cx: &mut App) {
     .detach();
 }
 
-fn agent_chat_enabled(cx: &App) -> bool {
+pub(crate) fn agent_chat_enabled(cx: &App) -> bool {
     AgentChatSettings::get_global(cx).enabled
 }
 
@@ -115,6 +115,16 @@ fn new_chat(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
+    if let Some(session) = create_session(workspace, kind, cx) {
+        open_chat(workspace, session, window, cx);
+    }
+}
+
+pub(crate) fn create_session(
+    workspace: &mut Workspace,
+    kind: AgentKind,
+    cx: &mut Context<Workspace>,
+) -> Option<Entity<AgentSession>> {
     let project = workspace.project().clone();
     if project.read(cx).is_via_remote_server() {
         workspace.show_toast(
@@ -125,15 +135,28 @@ fn new_chat(
             .autohide(),
             cx,
         );
-        return;
+        return None;
     }
     let cwd = chat_roots(&project, cx)
         .into_iter()
         .next()
         .unwrap_or_else(|| paths::home_dir().clone());
     let store = store_for(workspace, cx);
-    let session = store.update(cx, |store, cx| store.create_session(kind, cwd, cx));
-    open_chat(workspace, session, window, cx);
+    Some(store.update(cx, |store, cx| store.create_session(kind, cwd, cx)))
+}
+
+pub(crate) fn chat_view_for(
+    workspace: &Workspace,
+    session: &Entity<AgentSession>,
+    cx: &App,
+) -> Option<Entity<ChatView>> {
+    workspace
+        .items_of_type::<ChatView>(cx)
+        .find(|view| {
+            let view = view.read(cx);
+            view.session() == session && !view.is_subagent()
+        })
+        .or_else(|| crate::chat_panel::docked_chat_for(workspace, session, cx))
 }
 
 pub(crate) fn open_chat(
@@ -156,16 +179,20 @@ fn open_chat_in(
         return;
     }
     let kind = session.read(cx).kind();
-    store_for(workspace, cx).update(cx, |store, cx| store.update_agent_if_due(kind, cx));
-    let existing = workspace.items_of_type::<ChatView>(cx).find(|view| {
-        let view = view.read(cx);
-        view.session() == &session && !view.is_subagent()
-    });
-    if let Some(view) = existing {
-        workspace.activate_item(&view, true, true, window, cx);
+    let store = store_for(workspace, cx);
+    store.update(cx, |store, cx| store.update_agent_if_due(kind, cx));
+    if !split && crate::chat_panel::should_open_in_panel(workspace, cx) {
+        crate::chat_panel::show_chat_in_panel(workspace, session, store, window, cx);
         return;
     }
-    let store = store_for(workspace, cx);
+    if let Some(view) = chat_view_for(workspace, &session, cx) {
+        if view.read(cx).is_docked() {
+            crate::chat_panel::reveal_chat(workspace, &view, window, cx);
+        } else {
+            workspace.activate_item(&view, true, true, window, cx);
+        }
+        return;
+    }
     let project = workspace.project().clone();
     let weak_workspace = cx.entity().downgrade();
     let view = cx.new(|cx| ChatView::new(session, store, project, weak_workspace, window, cx));
@@ -659,7 +686,11 @@ impl AgentPanel {
 
     fn active_chat_id(&self, cx: &App) -> Option<String> {
         let workspace = self.workspace.upgrade()?;
-        let view = workspace.read(cx).active_item(cx)?.downcast::<ChatView>()?;
+        let workspace = workspace.read(cx);
+        let view = workspace
+            .active_item(cx)
+            .and_then(|item| item.downcast::<ChatView>())
+            .or_else(|| crate::chat_panel::visible_chat(workspace, cx))?;
         let id = view.read(cx).session().read(cx).metadata().id.clone();
         Some(id)
     }
@@ -1290,7 +1321,7 @@ fn disclosure_chevron(open: bool, color: Hsla) -> impl IntoElement {
     )
 }
 
-fn glyph(icon: IconName, size: f32, color: Hsla) -> Svg {
+pub(crate) fn glyph(icon: IconName, size: f32, color: Hsla) -> Svg {
     svg()
         .path(icon.path())
         .size(px(size))
@@ -1591,7 +1622,7 @@ impl IntoElement for EdgeFaded {
 }
 
 #[derive(IntoElement)]
-struct HeaderButton {
+pub(crate) struct HeaderButton {
     id: ElementId,
     icon: IconName,
     tooltip: SharedString,
@@ -1600,7 +1631,11 @@ struct HeaderButton {
 }
 
 impl HeaderButton {
-    fn new(id: impl Into<ElementId>, icon: IconName, tooltip: impl Into<SharedString>) -> Self {
+    pub(crate) fn new(
+        id: impl Into<ElementId>,
+        icon: IconName,
+        tooltip: impl Into<SharedString>,
+    ) -> Self {
         Self {
             id: id.into(),
             icon,
@@ -1658,7 +1693,7 @@ fn project_name(path: &Path) -> String {
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
-fn new_chat_action(kind: AgentKind) -> Box<dyn Action> {
+pub(crate) fn new_chat_action(kind: AgentKind) -> Box<dyn Action> {
     match kind {
         AgentKind::Claude => Box::new(NewClaudeChat),
         AgentKind::Codex => Box::new(NewCodexChat),

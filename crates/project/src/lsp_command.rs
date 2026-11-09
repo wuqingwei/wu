@@ -3275,45 +3275,21 @@ impl LspCommand for GetCompletions {
                             return false;
                         }
 
-                        let default_edit_range = lsp_defaults.as_ref().and_then(|lsp_defaults| {
-                            lsp_defaults
-                                .edit_range
-                                .as_ref()
-                                .and_then(|range| match range {
-                                    CompletionListItemDefaultsEditRange::Range(r) => Some(r),
-                                    _ => None,
-                                })
-                        });
+                        let range = range_for_token
+                            .get_or_insert_with(|| {
+                                let offset = self.position.to_offset(&snapshot);
+                                let (range, kind) = snapshot
+                                    .surrounding_word(offset, Some(CharScopeContext::Completion));
+                                let range = if kind == Some(CharKind::Word) {
+                                    range
+                                } else {
+                                    offset..offset
+                                };
 
-                        let range = if let Some(range) = default_edit_range {
-                            let range = range_from_lsp(*range);
-                            let start = snapshot.clip_point_utf16(range.start, Bias::Left);
-                            let end = snapshot.clip_point_utf16(range.end, Bias::Left);
-                            if start != range.start.0 || end != range.end.0 {
-                                log::info!("completion out of expected range");
-                                return false;
-                            }
-
-                            snapshot.anchor_before(start)..snapshot.anchor_after(end)
-                        } else {
-                            range_for_token
-                                .get_or_insert_with(|| {
-                                    let offset = self.position.to_offset(&snapshot);
-                                    let (range, kind) = snapshot.surrounding_word(
-                                        offset,
-                                        Some(CharScopeContext::Completion),
-                                    );
-                                    let range = if kind == Some(CharKind::Word) {
-                                        range
-                                    } else {
-                                        offset..offset
-                                    };
-
-                                    snapshot.anchor_before(range.start)
-                                        ..snapshot.anchor_after(range.end)
-                                })
-                                .clone()
-                        };
+                                snapshot.anchor_before(range.start)
+                                    ..snapshot.anchor_after(range.end)
+                            })
+                            .clone();
 
                         // We already know text_edit is None here
                         let text = lsp_completion
@@ -3322,9 +3298,10 @@ impl LspCommand for GetCompletions {
                             .unwrap_or(&lsp_completion.label)
                             .clone();
 
+                        let insert_range = Some(range.start..snapshot.anchor_after(self.position));
                         ParsedCompletionEdit {
                             replace_range: range,
-                            insert_range: None,
+                            insert_range,
                             new_text: text,
                         }
                     }
@@ -4004,6 +3981,7 @@ impl InlayHints {
                             }
                         }),
                         location: Some(server_id).zip(lsp_part.location),
+                        command: Some(server_id).zip(lsp_part.command),
                     });
                 }
                 InlayHintLabel::LabelParts(parts)
@@ -4014,6 +3992,7 @@ impl InlayHints {
     }
 
     pub fn project_to_proto_hint(response_hint: InlayHint) -> proto::InlayHint {
+        let position = response_hint.position;
         let (state, lsp_resolve_state) = match response_hint.resolve_state {
             ResolveState::Resolved => (0, None),
             ResolveState::CanResolve(server_id, resolve_data) => (
@@ -4061,6 +4040,12 @@ impl InlayHints {
                                 location_range_start,
                                 location_range_end,
                                 language_server_id: label_part.location.as_ref().map(|(server_id, _)| server_id.0 as u64),
+                                command: label_part.command.map(|(server_id, command)| LspStore::serialize_code_action(&CodeAction {
+                                    server_id,
+                                    range: position..position,
+                                    lsp_action: LspAction::Command(command),
+                                    resolved: true,
+                                })),
                             }}).collect()
                         })
                     }
@@ -4179,6 +4164,23 @@ impl InlayHints {
                                     None => None,
                                 }
                             },
+                            command: match part.command {
+                                Some(command) => {
+                                    let action = LspStore::deserialize_code_action(command)
+                                        .context("invalid command in inlay hint label part")?;
+                                    match action.lsp_action {
+                                        LspAction::Command(command) => {
+                                            Some((action.server_id, command))
+                                        }
+                                        LspAction::Action(_) | LspAction::CodeLens(_) => {
+                                            anyhow::bail!(
+                                                "unexpected non-command action in inlay hint label part"
+                                            )
+                                        }
+                                    }
+                                }
+                                None => None,
+                            },
                         });
                     }
 
@@ -4264,7 +4266,7 @@ impl InlayHints {
                                 })
                             }),
                             location: part.location.map(|(_, location)| location),
-                            command: None,
+                            command: part.command.map(|(_, command)| command),
                         })
                         .collect(),
                 ),

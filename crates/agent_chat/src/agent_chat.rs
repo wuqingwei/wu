@@ -1,5 +1,6 @@
 mod agent_chat_settings;
 mod agent_panel;
+mod chat_panel;
 mod chat_style;
 mod chat_view;
 mod commit_message;
@@ -12,6 +13,7 @@ mod usage_rings;
 
 pub use agent_chat_settings::{AgentChatSettings, CommitMessageSettings};
 pub use agent_panel::AgentPanel;
+pub use chat_panel::ChatPanel;
 pub use chat_view::ChatView;
 pub use commit_message::{
     commit_message_agent_label, commit_message_menu, generate_commit_message,
@@ -59,6 +61,12 @@ actions!(
         ToggleDictation,
         /// Renames the chat from its tab.
         RenameChat,
+        /// Shows or hides the chat panel.
+        ToggleChatPanel,
+        /// Moves the chat out of its tab and into the chat panel.
+        MoveChatToPanel,
+        /// Moves a chat from the chat panel back into a tab.
+        MoveChatToTab,
     ]
 );
 
@@ -101,6 +109,7 @@ pub fn init(shell_env_loaded: Option<futures::channel::oneshot::Receiver<()>>, c
         changes,
     });
     agent_panel::init(cx);
+    chat_panel::init(cx);
     watch_enabled(cx);
 }
 
@@ -204,7 +213,11 @@ fn close_agent_chats(cx: &mut App) {
                             workspace.hide_modal(window, cx);
                         }
                         workspace.close_panel::<AgentPanel>(window, cx);
-                        for pane in workspace.panes().to_vec() {
+                        let mut panes = workspace.panes().to_vec();
+                        if let Some(panel) = workspace.panel::<ChatPanel>(cx) {
+                            panes.push(panel.read(cx).pane().clone());
+                        }
+                        for pane in panes {
                             pane.update(cx, |pane, cx| {
                                 let chats: collections::HashSet<EntityId> = pane
                                     .items_of_type::<ChatView>()

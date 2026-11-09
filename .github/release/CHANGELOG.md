@@ -4,6 +4,21 @@ All notable user-facing changes to Wu are listed here, newest first.
 
 ## Unreleased
 
+- Fix links and text selection in tables rendered in agent chat.
+- Allow multiple tabs inside the agent chat side panel.
+- Reduce quoted text bar's width.
+- Close images in agent chat on background click.
+
+## 1.2.0 - 2026-11-08
+
+- Add a side panel for agent chats.
+- Fix voice dictation UI in agent chat.
+- Fix window resize not persisting on Windows.
+- Inter at 350 weight is now the new interface font.
+- Bring in improvements and bug fixes from Zed v1.22.
+- Fix background command indicator wrapping onto the next line.
+- Fix thought process getting nested under two headers when there's nothing else in the group.
+
 ## 1.1.19 - 2026-11-07
 
 - Fix jank in git panel's history.
@@ -11,11 +26,16 @@ All notable user-facing changes to Wu are listed here, newest first.
 - Improve agent questions UX.
 - Smaller download and install size on macOS.
 
+| Binary | 1.1.18 (MB) | 1.1.19 (MB) | Change |
+|---|---|---|---|
+| Wu-aarch64.dmg | 86.8 | 72.2 | −17% |
+| Wu-x86_64.dmg | 95.4 | 75.8 | −21% |
+
 ## 1.1.18 - 2026-11-06
 
 - Smaller download and install size on Linux and Windows.
 
-| Binary | Size Before (MB) | Size Now (MB) | Change |
+| Binary | 1.1.17 (MB) | 1.1.18 (MB) | Change |
 |---|---|---|---|
 | wu-linux-aarch64.tar.gz | 86.3 | 54.7 | −37% |
 | wu-linux-x86_64.tar.gz | 89.4 | 57.8 | −35% |
