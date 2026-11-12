@@ -4,10 +4,22 @@ All notable user-facing changes to Wu are listed here, newest first.
 
 ## Unreleased
 
+## 1.2.2 - 2026-11-11
+
+- Fix the Git panel going stale after running git commands outside Wu.
+- Fix new files ignoring the `line_ending` setting.
+- Fix a console window opening on Windows when an agent starts.
+- Fix OpenCode questions not showing a picker.
+- Fix Wu crashing on startup on ARM Linux.
+- List models in the model picker in the same order as the underlying agent.
+
+## 1.2.1 - 2026-11-09
+
 - Fix links and text selection in tables rendered in agent chat.
 - Allow multiple tabs inside the agent chat side panel.
 - Reduce quoted text bar's width.
 - Close images in agent chat on background click.
+- Make agent thinking indicator animation look more like Wu.
 
 ## 1.2.0 - 2026-11-08
 
