@@ -28,6 +28,16 @@ On macOS and Linux, run:
 curl -fsSL https://wu.dstrml.org/install.sh | sh
 ```
 
+### Ubuntu 20.04
+
+The official Linux build requires glibc 2.35 and will not run on Ubuntu 20.04 (glibc 2.31). This fork ships a 20.04-only build, installable with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/wuqingwei/wu/main/install-ubuntu2004.sh | sh
+```
+
+See [`install-ubuntu2004.sh`](./install-ubuntu2004.sh) for options: `WU_VERSION` pins a release tag, `WU_BUNDLE_PATH` installs a local tarball (handy for offline machines).
+
 For Windows, download the [installer](https://github.com/dstrml/wu/releases/latest/download/Wu-x86_64.exe).
 
 <details>

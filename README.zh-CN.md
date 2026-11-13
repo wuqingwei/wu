@@ -28,6 +28,16 @@ Wu 是一款用 Rust 编写的快速原生代码编辑器，界面简洁现代�
 curl -fsSL https://wu.dstrml.org/install.sh | sh
 ```
 
+### Ubuntu 20.04
+
+官方 Linux 包需要 glibc 2.35，在 Ubuntu 20.04（glibc 2.31）上跑不起来。本 fork 提供专为 20.04 编译的包，一键安装：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/wuqingwei/wu/main/install-ubuntu2004.sh | sh
+```
+
+选项见 [`install-ubuntu2004.sh`](./install-ubuntu2004.sh)：`WU_VERSION` 指定 Release 标签，`WU_BUNDLE_PATH` 装本地包（离线机器用）。
+
 Windows 用户请下载[安装程序](https://github.com/dstrml/wu/releases/latest/download/Wu-x86_64.exe)。
 
 <details>
